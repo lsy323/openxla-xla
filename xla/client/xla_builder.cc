@@ -896,6 +896,7 @@ StatusOr<XlaOp> XlaBuilder::InDimBroadcast(
 
 StatusOr<XlaOp> XlaBuilder::AddBroadcastSequence(const Shape& output_shape,
                                                  XlaOp operand) {
+  std::cout << "AddBroadcastSequence\n";
   TF_RETURN_IF_ERROR(first_error_);
 
   TF_ASSIGN_OR_RETURN(const Shape* operand_shape, GetShapePtr(operand));
@@ -961,6 +962,9 @@ XlaOp XlaBuilder::BinaryOp(HloOpcode binop, XlaOp lhs, XlaOp rhs,
   return ReportErrorOrReturn([&]() -> StatusOr<XlaOp> {
     TF_ASSIGN_OR_RETURN(const Shape* lhs_shape, GetShapePtr(lhs));
     TF_ASSIGN_OR_RETURN(const Shape* rhs_shape, GetShapePtr(rhs));
+    std::cout << "XlaBuilder::BinaryOp's shape inference::\n";
+    std::cout << "lhs shape: " << ShapeUtil::HumanString(*lhs_shape) << "\n";
+    std::cout << "rhs shape: " << ShapeUtil::HumanString(*rhs_shape) << "\n";
     TF_ASSIGN_OR_RETURN(
         Shape shape, ShapeInference::InferBinaryOpShape(
                          binop, *lhs_shape, *rhs_shape, broadcast_dimensions));
@@ -998,20 +1002,35 @@ XlaOp XlaBuilder::BinaryOp(HloOpcode binop, XlaOp lhs, XlaOp rhs,
 
       updated_lhs = should_broadcast_lhs ? broadcasted_operand : lhs;
       updated_rhs = !should_broadcast_lhs ? broadcasted_operand : rhs;
+      TF_ASSIGN_OR_RETURN(const Shape* updated_lhs_shape,
+                          GetShapePtr(updated_lhs));
+      TF_ASSIGN_OR_RETURN(const Shape* updated_rhs_shape,
+                          GetShapePtr(updated_rhs));
+      std::cout << "updated lhs shape: "
+                << ShapeUtil::HumanString(*updated_lhs_shape) << "\n";
+      std::cout << "updated rhs shape: "
+                << ShapeUtil::HumanString(*updated_rhs_shape) << "\n";
     }
 
     TF_ASSIGN_OR_RETURN(const Shape* updated_lhs_shape,
                         GetShapePtr(updated_lhs));
-    if (!ShapeUtil::SameDimensions(shape, *updated_lhs_shape)) {
-      TF_ASSIGN_OR_RETURN(updated_lhs,
-                          AddBroadcastSequence(shape, updated_lhs));
-    }
     TF_ASSIGN_OR_RETURN(const Shape* updated_rhs_shape,
                         GetShapePtr(updated_rhs));
-    if (!ShapeUtil::SameDimensions(shape, *updated_rhs_shape)) {
-      TF_ASSIGN_OR_RETURN(updated_rhs,
-                          AddBroadcastSequence(shape, updated_rhs));
+    if (!updated_lhs_shape->is_unbounded_dynamic() &&
+        !updated_rhs_shape->is_unbounded_dynamic()) {
+      if (!ShapeUtil::SameDimensions(shape, *updated_lhs_shape)) {
+        std::cout << "AddBroadcastSequence called from XlaBuilder::BinaryOp for lhs\n";
+        TF_ASSIGN_OR_RETURN(updated_lhs,
+                            AddBroadcastSequence(shape, updated_lhs));
+      }
+      if (!ShapeUtil::SameDimensions(shape, *updated_rhs_shape)) {
+        std::cout << "AddBroadcastSequence called from XlaBuilder::BinaryOp for rhs\n";
+        TF_ASSIGN_OR_RETURN(updated_rhs,
+                            AddBroadcastSequence(shape, updated_rhs));
+      }
     }
+    std::cout << ShapeUtil::SameDimensions(shape, *updated_lhs_shape)
+              << ShapeUtil::SameDimensions(shape, *updated_rhs_shape) << "\n";
 
     if (binop == HloOpcode::kCompare) {
       if (!direction.has_value()) {
@@ -1276,6 +1295,7 @@ XlaOp XlaBuilder::BroadcastInDim(
     }
 
     // Otherwise handle degenerate broadcast case.
+    std::cout << "AddBroadcastSequence called from XlaBuilder::BroadcastInDim\n";
     return AddBroadcastSequence(output_shape, in_dim_broadcast);
   });
 }
@@ -4835,6 +4855,7 @@ XlaOp Conj(const XlaOp operand) {
 
 XlaOp Add(const XlaOp lhs, const XlaOp rhs,
           absl::Span<const int64_t> broadcast_dimensions) {
+  std::cout << "In XLABuilder::Add\n";
   return lhs.builder()->BinaryOp(HloOpcode::kAdd, lhs, rhs,
                                  broadcast_dimensions);
 }

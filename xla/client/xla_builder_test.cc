@@ -209,6 +209,7 @@ TEST_F(XlaBuilderTest, ParamPlusParamHasBroadcast) {
   EXPECT_TRUE(ShapeUtil::Equal(add_shape, x_shape));
 
   TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+  std::cout << module->ToString();
   auto root = module->entry_computation()->root_instruction();
   EXPECT_THAT(
       root, GmockMatch(m::Add(m::Parameter(0), m::Broadcast(m::Parameter(1)))));
@@ -1524,5 +1525,309 @@ TEST_F(XlaBuilderTest, InvalidSharding) {
               HasSubstr("Number of tile assignment dimensions (excluding "
                         "subgroups) is different than the input rank"));
 }
+
+TEST_F(XlaBuilderTest, Experimental) {
+  XlaBuilder b(TestName());
+
+  auto x1 = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {10, 10}), "x1");
+  auto y1 = Parameter(&b, 1, ShapeUtil::MakeShape(F32, {1}), "y1");
+  auto add1 = Add(x1, y1, /*broadcast_dimensions=*/{1});
+  TF_ASSERT_OK_AND_ASSIGN(auto add1_shape, b.GetShape(add1));
+  EXPECT_TRUE(
+      ShapeUtil::Equal(add1_shape, ShapeUtil::MakeShape(F32, {10, 10})));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedAdd) {
+  XlaBuilder b(TestName());
+
+  // lhs shape = [?, ?]
+  // rhs shape = [2, 1]
+  // broadcast_dimensions = {}
+  // output = [2, ?]
+  auto x1 = Parameter(
+      &b, 0,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, Shape::kUnboundedSize},
+                           {true, true}),
+      "x1");
+  auto y1 =
+      Parameter(&b, 1, ShapeUtil::MakeShape(F32, {2, 1}, {false, false}), "y1");
+  auto add1 = Add(x1, y1, /*broadcast_dimensions=*/{});
+  TF_ASSERT_OK_AND_ASSIGN(auto add1_shape, b.GetShape(add1));
+  EXPECT_TRUE(ShapeUtil::Equal(
+      add1_shape,
+      ShapeUtil::MakeShape(F32, {2, Shape::kUnboundedSize}, {false, true})));
+
+  // lhs shape = [?, 3]
+  // rhs shape = [2, ?]
+  // broadcast_dimensions = {}
+  // output = [2, 1]
+  auto x2 = Parameter(
+      &b, 2,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 3}, {true, false}),
+      "x2");
+  auto y2 = Parameter(
+      &b, 3,
+      ShapeUtil::MakeShape(F32, {2, Shape::kUnboundedSize}, {false, true}),
+      "y2");
+  auto add2 = Add(x2, y2, /*broadcast_dimensions=*/{});
+  TF_ASSERT_OK_AND_ASSIGN(auto add2_shape, b.GetShape(add2));
+  EXPECT_TRUE(ShapeUtil::Equal(
+      add2_shape, ShapeUtil::MakeShape(F32, {2, 3}, {false, false})));
+
+  // lhs shape = [?, ?]
+  // rhs shape = [?, ?]
+  // broadcast_dimensions = {}
+  // output = [?, ?]
+  auto x3 = Parameter(
+      &b, 4,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, Shape::kUnboundedSize},
+                           {true, true}),
+      "x3");
+  auto y3 = Parameter(
+      &b, 5,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, Shape::kUnboundedSize},
+                           {true, true}),
+      "y3");
+  auto add3 = Add(x3, y3, /*broadcast_dimensions=*/{});
+  TF_ASSERT_OK_AND_ASSIGN(auto add3_shape, b.GetShape(add3));
+  EXPECT_TRUE(ShapeUtil::Equal(
+      add3_shape,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, Shape::kUnboundedSize},
+                           {true, true})));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+  std::cout << module->ToString();
+}
+// b XlaBuilderTest_Experimental_Test::TestBody
+
+TEST_F(XlaBuilderTest, UnboundedConcat) {
+  XlaBuilder b(TestName());
+
+  auto x1 = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {10, 10}), "x1");
+  auto y1 = Parameter(
+      &b, 1,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, Shape::kUnboundedSize},
+                           {true, true}),
+      "y1");
+  auto y2 = Parameter(&b, 2, ShapeUtil::MakeShape(F32, {10, 1}, {false, false}),
+                      "y2");
+  auto concat1 = ConcatInDim(&b, {x1, y1, y2}, 1);
+  TF_ASSERT_OK_AND_ASSIGN(auto concat1_shape, b.GetShape(concat1));
+  EXPECT_TRUE(ShapeUtil::Equal(
+      concat1_shape,
+      ShapeUtil::MakeShape(F32, {10, Shape::kUnboundedSize}, {true, true})));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedTranspose) {
+  XlaBuilder b(TestName());
+
+  auto y0 =
+      Parameter(&b, 0,
+                ShapeUtil::MakeShape(
+                    F32, {10, Shape::kUnboundedSize, 20, Shape::kUnboundedSize},
+                    {false, true, false, true}),
+                "y0");
+  auto tranpose1 = Transpose(y0, {3, 0, 1, 2});
+  TF_ASSERT_OK_AND_ASSIGN(auto tranpose1_shape, b.GetShape(tranpose1));
+  auto shape = ShapeUtil::MakeShapeWithDenseLayout(
+      F32, {Shape::kUnboundedSize, 10, Shape::kUnboundedSize, 20},
+      {0, 3, 2, 1});
+  shape.set_dynamic_dimension(0, true);
+  shape.set_dynamic_dimension(2, true);
+  EXPECT_TRUE(ShapeUtil::Equal(tranpose1_shape, shape));
+  std::cout << ShapeUtil::HumanStringWithLayout(tranpose1_shape) << "\n";
+  std::cout << ShapeUtil::HumanStringWithLayout(shape) << "\n";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedPad) {
+  XlaBuilder b(TestName());
+  auto y0 = Parameter(
+      &b, 0,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 10}, {true, false}),
+      "y0");
+  auto pad_val = ConstantR0<float>(&b, 0);
+  PaddingConfig padding_config;
+  for (int i = 0; i < 2; i++) {
+    auto dimension = padding_config.add_dimensions();
+    dimension->set_edge_padding_low(1);
+    dimension->set_edge_padding_high(1);
+    dimension->set_interior_padding(1);
+  }
+  Pad(y0, pad_val, padding_config);
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+  const Shape& result_shape =
+      module->entry_computation()->root_instruction()->shape();
+  auto shape =
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 21}, {true, false});
+  EXPECT_TRUE(ShapeUtil::Equal(result_shape, shape));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedReduce) {
+  XlaBuilder b(TestName());
+  auto y0 =
+      Parameter(&b, 0, ShapeUtil::MakeShape(F32, {7, 5}, {false, false}), "y0");
+  auto y1 = Parameter(
+      &b, 1,
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 5}, {true, false}),
+      "y1");
+  auto y2 = Parameter(
+      &b, 2,
+      ShapeUtil::MakeShape(F32, {7, Shape::kUnboundedSize}, {false, true}),
+      "y2");
+  auto init = Parameter(&b, 3, ShapeUtil::MakeShape(F32, {}), "init");
+
+  XlaBuilder bsum(TestName());
+  auto x0 = Parameter(&bsum, 0, ShapeUtil::MakeShape(F32, {}), "x1");
+  auto x1 = Parameter(&bsum, 1, ShapeUtil::MakeShape(F32, {}), "x2");
+  auto x2 = Parameter(&bsum, 2, ShapeUtil::MakeShape(F32, {}), "x3");
+  auto x3 = Parameter(&bsum, 3, ShapeUtil::MakeShape(F32, {}), "x4");
+  auto x4 = Parameter(&bsum, 4, ShapeUtil::MakeShape(F32, {}), "x5");
+  auto x5 = Parameter(&bsum, 5, ShapeUtil::MakeShape(F32, {}), "x6");
+  std::vector<XlaOp> output_operands = {Add(x0, x1), Add(x2, x3), Add(x4, x5)};
+  Tuple(&bsum, absl::MakeSpan(output_operands));
+  TF_ASSERT_OK_AND_ASSIGN(auto sum, bsum.Build());
+  Reduce(&b, {y0, y1, y2}, {init, init, init}, sum, {1});
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+
+  const Shape& result_shape =
+      module->entry_computation()->root_instruction()->shape();
+  auto shape = ShapeUtil::MakeShape(F32, {7}, {false});
+  auto tuple_shape = ShapeUtil::MakeTupleShape({shape, shape, shape});
+
+  std::cout << ShapeUtil::HumanStringWithLayout(result_shape) << "\n";
+  std::cout << ShapeUtil::HumanStringWithLayout(tuple_shape) << "\n";
+  EXPECT_TRUE(ShapeUtil::Equal(result_shape, tuple_shape));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedBatchNormInference) {
+  XlaBuilder b(TestName());
+  auto operand =
+      Parameter(&b, 0,
+                ShapeUtil::MakeShape(
+                    F32, {Shape::kUnboundedSize, Shape::kUnboundedSize, 7},
+                    {true, true, false}),
+                "operand");
+  auto scale =
+      Parameter(&b, 1, ShapeUtil::MakeShape(F32, {5}, {false}), "scale");
+  auto offset =
+      Parameter(&b, 2, ShapeUtil::MakeShape(F32, {5}, {false}), "offset");
+  auto mean = Parameter(&b, 3, ShapeUtil::MakeShape(F32, {5}, {false}), "mean");
+  auto variance =
+      Parameter(&b, 4, ShapeUtil::MakeShape(F32, {5}, {false}), "variance");
+
+  BatchNormInference(operand, scale, offset, mean, variance, 1.0, 1);
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+
+  const Shape& result_shape =
+      module->entry_computation()->root_instruction()->shape();
+  auto shape = ShapeUtil::MakeShape(
+      F32, {Shape::kUnboundedSize, Shape::kUnboundedSize, 7},
+      {true, true, false});
+
+  EXPECT_TRUE(ShapeUtil::Equal(result_shape, shape));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedBatchNormTraining) {
+  XlaBuilder b(TestName());
+  auto operand =
+      Parameter(&b, 0,
+                ShapeUtil::MakeShape(
+                    F32, {Shape::kUnboundedSize, Shape::kUnboundedSize, 7},
+                    {true, true, false}),
+                "operand");
+  auto scale =
+      Parameter(&b, 1, ShapeUtil::MakeShape(F32, {5}, {false}), "scale");
+  auto offset =
+      Parameter(&b, 2, ShapeUtil::MakeShape(F32, {5}, {false}), "offset");
+
+  BatchNormTraining(operand, scale, offset, 1.0, 1);
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+
+  const Shape& result_shape =
+      module->entry_computation()->root_instruction()->shape();
+  auto shape1 = ShapeUtil::MakeShape(
+      F32, {Shape::kUnboundedSize, Shape::kUnboundedSize, 7},
+      {true, true, false});
+  auto shape2 = ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize}, {true});
+  auto tuple_shape = ShapeUtil::MakeTupleShape({shape1, shape2, shape2});
+
+  EXPECT_TRUE(ShapeUtil::Equal(result_shape, tuple_shape));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedBatchNormGrad) {
+  XlaBuilder b(TestName());
+  auto operand =
+      Parameter(&b, 0,
+                ShapeUtil::MakeShape(
+                    F32, {Shape::kUnboundedSize, Shape::kUnboundedSize, 7},
+                    {true, true, false}),
+                "operand");
+  auto scale =
+      Parameter(&b, 1, ShapeUtil::MakeShape(F32, {5}, {false}), "scale");
+  auto mean = Parameter(
+      &b, 2, ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize}, {true}),
+      "mean");
+  auto var = Parameter(
+      &b, 3, ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize}, {true}), "var");
+  auto out_grad =
+      Parameter(&b, 4,
+                ShapeUtil::MakeShape(F32, {5, Shape::kUnboundedSize, 7},
+                                     {false, true, false}),
+                "out_grad");
+
+  BatchNormGrad(operand, scale, mean, var, out_grad, 1.0, 1);
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+
+  const Shape& result_shape =
+      module->entry_computation()->root_instruction()->shape();
+  auto shape1 = ShapeUtil::MakeShape(
+      F32, {Shape::kUnboundedSize, Shape::kUnboundedSize, 7},
+      {true, true, false});
+  auto shape2 = ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize}, {true});
+  auto tuple_shape = ShapeUtil::MakeTupleShape({shape1, shape2, shape2});
+
+  EXPECT_TRUE(ShapeUtil::Equal(result_shape, tuple_shape));
+  std::cout << module->ToString();
+}
+
+TEST_F(XlaBuilderTest, UnboundedDot) {
+  XlaBuilder b(TestName());
+  Shape tuple_param_shape = ShapeUtil::MakeTupleShape(
+      {ShapeUtil::MakeShape(F32,
+                            {Shape::kUnboundedSize, 3, Shape::kUnboundedSize},
+                            {true, true, true}),
+       ShapeUtil::MakeShape(F32, {2, 4, 5}, {true, false, false})});
+  auto p0 = Parameter(&b, 0, tuple_param_shape, "p0");
+
+  auto lhs = GetTupleElement(p0, 0);
+  auto rhs = GetTupleElement(p0, 1);
+  DotDimensionNumbers dnums;
+  dnums.add_lhs_contracting_dimensions(2);
+  dnums.add_rhs_contracting_dimensions(1);
+  dnums.add_lhs_batch_dimensions(0);
+  dnums.add_rhs_batch_dimensions(0);
+  DotGeneral(lhs, rhs, dnums);
+  TF_ASSERT_OK_AND_ASSIGN(auto module, BuildHloModule(&b));
+  const Shape& result_shape =
+      module->entry_computation()->root_instruction()->shape();
+  auto shape = ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 3, 5},
+                                    {true, true, false});
+  EXPECT_TRUE(ShapeUtil::Equal(result_shape, shape));
+  std::cout << module->ToString();
+}
+
 }  // namespace
 }  // namespace xla
