@@ -37,6 +37,10 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/logging.h"
+#include "tsl/platform/protobuf.h"
+#include "tsl/platform/statusor.h"
 #include "xla/permutation_util.h"
 #include "xla/primitive_util.h"
 #include "xla/shape.h"
@@ -49,11 +53,8 @@ limitations under the License.
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
-#include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
 
-namespace xla {
-namespace {
 
 using absl::StrFormat;
 using absl::StrJoin;
@@ -655,6 +656,7 @@ void InferMostSpecificShape(absl::Span<const Shape* const> shapes,
 /* static */ StatusOr<Shape> ShapeInference::InferPadShape(
     const Shape& operand_shape, const Shape& padding_value_shape,
     const PaddingConfig& padding_config) {
+  std::cout << "ShapeInference::InferPadShape\n";
   if (!operand_shape.IsArray()) {
     return InvalidArgument(
         "Pad operation does not support tuple-shape operands.");
@@ -940,6 +942,15 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(HloOpcode operation,
     const Shape& smaller_shape, const Shape& larger_shape,
     absl::Span<const int64_t> broadcast_dimensions) {
   std::cout << "InferInDimBroadcastShape: ";
+  if (smaller_shape.is_unbounded_dynamic() ||
+      larger_shape.is_unbounded_dynamic()) {
+    return InvalidArgument(
+        "Unbounded dynamic shapes not supported in InferInDimBroadcastShape, "
+        "but we have %s and %s",
+        ShapeUtil::HumanString(smaller_shape),
+        ShapeUtil::HumanString(larger_shape));
+  }
+
   if (broadcast_dimensions.empty() && !ShapeUtil::IsScalar(smaller_shape)) {
     // Reject "magic" inference for binops on different shapes, requiring
     // the user to provide an explicit broadcast dimension in this case.
@@ -1101,6 +1112,15 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(HloOpcode operation,
     // broadcast_dimensions. Scalar broadcasting is a special case of this.
     const Shape& larger_shape = lhs.rank() > rhs.rank() ? lhs : rhs;
     const Shape& smaller_shape = lhs.rank() > rhs.rank() ? rhs : lhs;
+
+    if (smaller_shape.is_unbounded_dynamic() ||
+        larger_shape.is_unbounded_dynamic()) {
+      std::vector<int64_t> dimensions(larger_shape.rank(),
+                                      Shape::kUnboundedSize);
+      std::vector<bool> is_dynamic(larger_shape.rank(), true);
+      return ShapeUtil::MakeShape(larger_shape.element_type(), dimensions,
+                                  is_dynamic);
+    }
 
     // After InDim broadcasting, perform degenerate dimensions broadcasting.
     TF_ASSIGN_OR_RETURN(Shape indim_broadcast_shape,
@@ -2888,7 +2908,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(HloOpcode operation,
       return InvalidArgument("Negative size index to dynamic slice: %d.",
                              slice_dim_size);
     }
-    if (slice_dim_size > input_dim_size) {
+    if (!IsUnboundedDynamicSize(input_dim_size) &&
+        slice_dim_size > input_dim_size) {
       return InvalidArgument(
           "Slice dim size %d greater than dynamic slice dimension: %d.",
           slice_dim_size, input_dim_size);
@@ -3012,12 +3033,14 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(HloOpcode operation,
   for (int64_t dim = 0; dim < operand_shape.rank(); ++dim) {
     const int64_t input_dim_size = operand_shape.dimensions(dim);
     const int64_t update_dim_size = update_shape.dimensions(dim);
-    if (update_dim_size < 0) {
+    if (!IsUnboundedDynamicSize(update_dim_size) && update_dim_size < 0) {
       return InvalidArgument(
           "Size index %d to dynamic update slice must be >= 0.",
           update_dim_size);
     }
-    if (update_dim_size > input_dim_size) {
+    if (!IsUnboundedDynamicSize(update_dim_size) &&
+        !IsUnboundedDynamicSize(input_dim_size) &&
+        update_dim_size > input_dim_size) {
       return InvalidArgument(
           "Update dim size %d greater than dynamic slice dimension: %d.",
           update_dim_size, input_dim_size);
@@ -3201,8 +3224,13 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(HloOpcode operation,
     // which is a negative value, hence the following check will also disallow
     // unbounded dynamic dimensions in 'broadcast_sizes'.
     if (size < 0) {
-      return InvalidArgument("Broadcast with negative dimension size %d.",
-                             size);
+      Shape faulty_shape =
+          ShapeUtil::MakeShape(operand.element_type(), broadcast_sizes);
+      return InvalidArgument(
+          "Broadcast with negative dimension size %d. operand shape is: %s, "
+          "broadcast shape: %s",
+          size, ShapeUtil::HumanString(operand),
+          ShapeUtil::HumanString(faulty_shape));
     }
   }
 
@@ -3224,6 +3252,13 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(HloOpcode operation,
 /* static */ StatusOr<Shape> ShapeInference::InferBroadcastShape(
     const Shape& operand_shape, const Shape& output_shape,
     absl::Span<const int64_t> broadcast_dimensions) {
+  if (output_shape.is_unbounded_dynamic()) {
+    return InvalidArgument(
+        "Broadcast with unbounded dynamic dimension not supported; "
+        "operand shape: rank: %s; output shape: %s",
+        ShapeUtil::HumanString(operand_shape),
+        ShapeUtil::HumanString(output_shape));
+  }
   TF_RETURN_IF_ERROR(ExpectArray(operand_shape, "operand of broadcast"));
   TF_RETURN_IF_ERROR(ExpectArray(output_shape, "operand of broadcast"));
   const int64_t operand_rank = operand_shape.rank();
@@ -3322,6 +3357,9 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(HloOpcode operation,
   VLOG(3) << "Reshape inferred shape: "
           << ShapeUtil::HumanString(inferred_shape);
 
+  if (!inferred_shape.is_unbounded_dynamic()) {
+    return inferred_shape;
+  }
   if (ShapeUtil::ElementsIn(operand) != ShapeUtil::ElementsIn(inferred_shape)) {
     return InvalidArgument(
         "Reshape operation has mismatched element counts: from=%d (%s) "

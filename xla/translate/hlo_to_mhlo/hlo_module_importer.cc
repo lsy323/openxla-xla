@@ -19,7 +19,9 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
+#include "mlir/Dialect/Shape/IR/Shape.h"
 #include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "stablehlo/dialect/ChloOps.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -41,6 +43,8 @@ HloModuleImporter::HloModuleImporter(mlir::ModuleOp module,
   module.getContext()->loadDialect<mlir::arith::ArithDialect>();
   module.getContext()->loadDialect<mlir::func::FuncDialect>();
   module.getContext()->loadDialect<mlir::mhlo::MhloDialect>();
+  module.getContext()->loadDialect<mlir::shape::ShapeDialect>();
+  module.getContext()->loadDialect<mlir::chlo::ChloDialect>();
 }
 
 namespace {

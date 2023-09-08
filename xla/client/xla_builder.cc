@@ -43,6 +43,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/array.h"
 #include "xla/client/padding.h"
+#include "tsl/platform/errors.h"
 #include "xla/client/sharding_builder.h"
 #include "xla/client/xla_computation.h"
 #include "xla/comparison_util.h"
@@ -68,9 +69,6 @@ limitations under the License.
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/stacktrace.h"
-#include "tsl/platform/statusor.h"
-
-namespace xla {
 
 using absl::StrCat;
 
@@ -897,6 +895,10 @@ StatusOr<XlaOp> XlaBuilder::InDimBroadcast(
 StatusOr<XlaOp> XlaBuilder::AddBroadcastSequence(const Shape& output_shape,
                                                  XlaOp operand) {
   std::cout << "AddBroadcastSequence\n";
+  if (output_shape.is_unbounded_dynamic()) {
+    return InvalidArgument(
+        "XlaBuilder::AddBroadcastSequence cannot handle unbounded shape.");
+  }
   TF_RETURN_IF_ERROR(first_error_);
 
   TF_ASSIGN_OR_RETURN(const Shape* operand_shape, GetShapePtr(operand));
@@ -968,9 +970,20 @@ XlaOp XlaBuilder::BinaryOp(HloOpcode binop, XlaOp lhs, XlaOp rhs,
     TF_ASSIGN_OR_RETURN(
         Shape shape, ShapeInference::InferBinaryOpShape(
                          binop, *lhs_shape, *rhs_shape, broadcast_dimensions));
+    std::cout << "Inferred shape:: " << ShapeUtil::HumanString(shape) << "\n";
 
     const int64_t lhs_rank = lhs_shape->rank();
     const int64_t rhs_rank = rhs_shape->rank();
+
+    if (lhs_rank != rhs_rank && (lhs_shape->is_unbounded_dynamic() ||
+                                 rhs_shape->is_unbounded_dynamic())) {
+      auto broadcasted_lhs = xla::CustomCall(
+          lhs.builder(), "DynamicBroadcastInDimUnresolved", {lhs}, shape);
+      auto broadcasted_rhs = xla::CustomCall(
+          rhs.builder(), "DynamicBroadcastInDimUnresolved", {rhs}, shape);
+      return BinaryOpNoBroadcast(binop, shape, broadcasted_lhs,
+                                 broadcasted_rhs);
+    }
 
     XlaOp updated_lhs = lhs;
     XlaOp updated_rhs = rhs;
@@ -1019,12 +1032,14 @@ XlaOp XlaBuilder::BinaryOp(HloOpcode binop, XlaOp lhs, XlaOp rhs,
     if (!updated_lhs_shape->is_unbounded_dynamic() &&
         !updated_rhs_shape->is_unbounded_dynamic()) {
       if (!ShapeUtil::SameDimensions(shape, *updated_lhs_shape)) {
-        std::cout << "AddBroadcastSequence called from XlaBuilder::BinaryOp for lhs\n";
+        std::cout << "AddBroadcastSequence called from XlaBuilder::BinaryOp "
+                     "for lhs\n";
         TF_ASSIGN_OR_RETURN(updated_lhs,
                             AddBroadcastSequence(shape, updated_lhs));
       }
       if (!ShapeUtil::SameDimensions(shape, *updated_rhs_shape)) {
-        std::cout << "AddBroadcastSequence called from XlaBuilder::BinaryOp for rhs\n";
+        std::cout << "AddBroadcastSequence called from XlaBuilder::BinaryOp "
+                     "for rhs\n";
         TF_ASSIGN_OR_RETURN(updated_rhs,
                             AddBroadcastSequence(shape, updated_rhs));
       }
@@ -1081,6 +1096,14 @@ StatusOr<XlaOp> XlaBuilder::Compare(const Shape& shape, XlaOp lhs, XlaOp rhs,
 }
 
 XlaOp XlaBuilder::TernaryOp(HloOpcode triop, XlaOp lhs, XlaOp rhs, XlaOp ehs) {
+  std::cout << "TernaryOp\n";
+  const Shape* lhs_shape = GetShapePtr(lhs).value();
+  const Shape* rhs_shape = GetShapePtr(rhs).value();
+  const Shape* ehs_shape = GetShapePtr(ehs).value();
+  std::cout << ShapeUtil::HumanString(*lhs_shape)
+            << ShapeUtil::HumanString(*rhs_shape)
+            << ShapeUtil::HumanString(*ehs_shape) << "\n";
+
   return ReportErrorOrReturn([&]() -> StatusOr<XlaOp> {
     XlaOp updated_lhs = lhs;
     XlaOp updated_rhs = rhs;
@@ -1092,6 +1115,15 @@ XlaOp XlaBuilder::TernaryOp(HloOpcode triop, XlaOp lhs, XlaOp rhs, XlaOp ehs) {
       TF_ASSIGN_OR_RETURN(const Shape* lhs_shape, GetShapePtr(lhs));
       TF_ASSIGN_OR_RETURN(const Shape* rhs_shape, GetShapePtr(rhs));
       TF_ASSIGN_OR_RETURN(const Shape* ehs_shape, GetShapePtr(ehs));
+      if (lhs_shape->is_unbounded_dynamic() ||
+          rhs_shape->is_unbounded_dynamic() ||
+          ehs_shape->is_unbounded_dynamic()) {
+        return InvalidArgument(
+            "Unbounded shape not supported in Ternary op: %s, %s, %s.",
+            ShapeUtil::HumanString(*lhs_shape),
+            ShapeUtil::HumanString(*rhs_shape),
+            ShapeUtil::HumanString(*ehs_shape));
+      }
 
       std::optional<Shape> non_scalar_shape;
       for (const Shape* shape : {lhs_shape, rhs_shape, ehs_shape}) {
@@ -1224,6 +1256,10 @@ XlaOp XlaBuilder::Parameter(
 
 XlaOp XlaBuilder::Broadcast(XlaOp operand,
                             absl::Span<const int64_t> broadcast_sizes) {
+  std::cout << "XlaBuilder::Broadcast\n";
+  std::cout << "dim size: [";
+  for (auto a : broadcast_sizes) std::cout << a << ", ";
+  std::cout << "]\n";
   return ReportErrorOrReturn([&]() -> StatusOr<XlaOp> {
     TF_ASSIGN_OR_RETURN(const Shape* operand_shape, GetShapePtr(operand));
     TF_ASSIGN_OR_RETURN(
@@ -1249,6 +1285,10 @@ XlaOp XlaBuilder::Broadcast(XlaOp operand,
 XlaOp XlaBuilder::BroadcastInDim(
     XlaOp operand, const absl::Span<const int64_t> out_dim_size,
     const absl::Span<const int64_t> broadcast_dimensions) {
+  std::cout << "XlaBuilder::BroadcastInDim\n";
+  std::cout << "dim size: [";
+  for (auto a : out_dim_size) std::cout << a << ", ";
+  std::cout << "]\n";
   return ReportErrorOrReturn([&]() -> StatusOr<XlaOp> {
     TF_ASSIGN_OR_RETURN(const Shape* operand_shape, GetShapePtr(operand));
     // Output shape, in the case of degenerate broadcast, the out_dim_size is
@@ -1295,7 +1335,8 @@ XlaOp XlaBuilder::BroadcastInDim(
     }
 
     // Otherwise handle degenerate broadcast case.
-    std::cout << "AddBroadcastSequence called from XlaBuilder::BroadcastInDim\n";
+    std::cout
+        << "AddBroadcastSequence called from XlaBuilder::BroadcastInDim\n";
     return AddBroadcastSequence(output_shape, in_dim_broadcast);
   });
 }
@@ -1587,6 +1628,7 @@ static StatusOr<XlaComputation> PassthroughComputation(const Shape& shape) {
 }
 
 XlaOp XlaBuilder::Select(XlaOp pred, XlaOp on_true, XlaOp on_false) {
+  std::cout << "XlaBuilder::Select\n";
   return ReportErrorOrReturn([&]() -> StatusOr<XlaOp> {
     TF_ASSIGN_OR_RETURN(const Shape* true_shape, GetShapePtr(on_true));
     TF_ASSIGN_OR_RETURN(const Shape* false_shape, GetShapePtr(on_false));
@@ -2561,6 +2603,7 @@ XlaOp XlaBuilder::StochasticConvertType(XlaOp operand, XlaOp random,
 }
 
 XlaOp XlaBuilder::Clamp(XlaOp min, XlaOp operand, XlaOp max) {
+  std::cout << "XlaBuilder::Clamp\n";
   return TernaryOp(HloOpcode::kClamp, min, operand, max);
 }
 
@@ -4886,6 +4929,7 @@ XlaOp Rem(const XlaOp lhs, const XlaOp rhs,
 
 XlaOp Max(const XlaOp lhs, const XlaOp rhs,
           absl::Span<const int64_t> broadcast_dimensions) {
+  std::cout << "XlaOp Max: " << lhs << ", " << rhs << "\n";
   return lhs.builder()->BinaryOp(HloOpcode::kMaximum, lhs, rhs,
                                  broadcast_dimensions);
 }

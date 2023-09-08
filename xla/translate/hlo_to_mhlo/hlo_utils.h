@@ -19,11 +19,11 @@ limitations under the License.
 #define XLA_TRANSLATE_HLO_TO_MHLO_HLO_UTILS_H_
 
 #include "llvm/ADT/STLExtras.h"
-#include "mlir/Dialect/SparseTensor/IR/Enums.h"  // from @llvm-project
+#include "mlir/Dialect/SparseTensor/IR/Enums.h"         // from @llvm-project
 #include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"  // from @llvm-project
-#include "mlir/IR/Attributes.h"  // from @llvm-project
-#include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Attributes.h"                         // from @llvm-project
+#include "mlir/IR/Builders.h"                           // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"                       // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/mlir_hlo/utils/convert_op_folder.h"
@@ -65,7 +65,8 @@ static StatusOr<TypeT> ConvertTensorShapeToType(const Shape& xla_ty,
   llvm::SmallVector<int64_t, 4> bounds(rank, mlir::ShapedType::kDynamic);
   for (int64_t dim = 0; dim < rank; ++dim) {
     int64_t dim_size = xla_ty.dimensions(dim);
-    if (xla_ty.is_dynamic_dimension(dim)) {
+    if (xla_ty.is_dynamic_dimension(dim) &&
+        !xla_ty.is_unbounded_dynamic_dimension(dim)) {
       bounds[dim] = dim_size;
       is_dynamic = true;
     } else {
