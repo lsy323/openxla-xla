@@ -2212,13 +2212,6 @@ LogicalResult BitcastConvertOp::verify() {
   return hlo::verifyBitcastConvertOp(getLoc(), getOperand(), getResult());
 }
 
-OpFoldResult BitcastConvertOp::fold(FoldAdaptor adaptor) {
-  auto type = getType().cast<RankedTensorType>();
-  if (type == getOperand().getType()) {
-    return getOperand();
-  }
-  return {};
-}
 
 //===----------------------------------------------------------------------===//
 // BroadcastOp
@@ -7356,7 +7349,6 @@ Operation *MhloDialect::materializeConstant(OpBuilder &builder, Attribute value,
   auto elementsAttr = value.dyn_cast<ElementsAttr>();
   // HLO dialect constants only support ElementsAttr unlike standard dialect
   // constant which supports all attributes.
-<<<<<<< HEAD
   if (!elementsAttr) return nullptr;
   auto resultShapedType = type.dyn_cast<ShapedType>();
   auto attrShapedType = elementsAttr.getType().dyn_cast<ShapedType>();
@@ -7374,13 +7366,6 @@ Operation *MhloDialect::materializeConstant(OpBuilder &builder, Attribute value,
   // HLO dialect constants require the type of value and result to match for
   // non-quantized tensors.
   if (type != elementsAttr.getType()) return nullptr;
-=======
-  if (!elementsAttr)
-    return nullptr;
-  // HLO dialect constants require the type of value and result to match.
-  if (type != elementsAttr.getType())
-    return nullptr;
->>>>>>> 947b9c9f2 (resnet model can be expressed in HLO)
 
   return builder.create<mhlo::ConstantOp>(loc, type, elementsAttr);
 }

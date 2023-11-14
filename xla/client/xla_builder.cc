@@ -70,6 +70,8 @@ limitations under the License.
 #include "tsl/platform/errors.h"
 #include "tsl/platform/stacktrace.h"
 
+namespace xla {
+
 using absl::StrCat;
 
 namespace {

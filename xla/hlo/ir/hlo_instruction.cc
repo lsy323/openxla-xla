@@ -85,6 +85,8 @@ limitations under the License.
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
 
+namespace xla {
+
 using absl::CEscape;
 using absl::StrAppend;
 using absl::StrCat;

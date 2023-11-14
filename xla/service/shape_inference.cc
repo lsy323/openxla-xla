@@ -40,7 +40,6 @@ limitations under the License.
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/protobuf.h"
-#include "tsl/platform/statusor.h"
 #include "xla/permutation_util.h"
 #include "xla/primitive_util.h"
 #include "xla/shape.h"
@@ -54,6 +53,10 @@ limitations under the License.
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
+
+
+namespace xla {
+namespace {
 
 
 using absl::StrFormat;
