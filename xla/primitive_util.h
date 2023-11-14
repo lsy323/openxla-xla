@@ -707,6 +707,7 @@ inline bool FitsInIntegralType(int64_t x, PrimitiveType ty) {
                  std::numeric_limits<NativeT>::max() >= x;
         }
         LOG(FATAL) << "Invalid primitive type " << PrimitiveType_Name(ty);
+	return false;
       },
       ty);
 }
